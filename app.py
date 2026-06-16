@@ -15,9 +15,56 @@ MODEL_PATH = os.path.join(BASE_DIR, "desicion_tree.pkl")
 with open(MODEL_PATH, "rb") as f:
     model = pickle.load(f)
 
-app = FastAPI(title="Cancer Survival Predictor", version="1.0.0")
+# ── Label encoding maps (alphabetical — matches sklearn LabelEncoder default) ──
+GENDER_MAP = {"Female": 0, "Male": 1, "Other": 2}
 
-# ── Embedded HTML ──────────────────────────────────────────────────────────────
+STATE_MAP = {
+    "Andhra Pradesh": 0, "Bihar": 1, "Delhi": 2, "Gujarat": 3,
+    "Karnataka": 4, "Kerala": 5, "Madhya Pradesh": 6, "Maharashtra": 7,
+    "Punjab": 8, "Rajasthan": 9, "Tamil Nadu": 10, "Telangana": 11,
+    "Uttar Pradesh": 12, "West Bengal": 13,
+}
+
+CITY_MAP = {
+    "Ahmedabad": 0, "Bangalore": 1, "Chennai": 2, "Delhi": 3,
+    "Hyderabad": 4, "Jaipur": 5, "Kolkata": 6, "Lucknow": 7,
+    "Mumbai": 8, "Pune": 9, "Surat": 10,
+}
+
+CANCER_TYPE_MAP = {
+    "Bladder": 0, "Brain": 1, "Breast": 2, "Cervical": 3,
+    "Colon": 4, "Kidney": 5, "Leukemia": 6, "Liver": 7,
+    "Lung": 8, "Ovarian": 9, "Pancreatic": 10, "Prostate": 11,
+    "Skin": 12, "Stomach": 13, "Thyroid": 14,
+}
+
+STAGE_MAP = {"Stage I": 0, "Stage II": 1, "Stage III": 2, "Stage IV": 3}
+
+TREATMENT_MAP = {
+    "Chemotherapy": 0, "Combined": 1, "Hormone Therapy": 2,
+    "Immunotherapy": 3, "Radiation": 4, "Surgery": 5, "Targeted Therapy": 6,
+}
+
+def encode_fuzzy(value: str, mapping: dict, field_name: str) -> int:
+    """Case-insensitive lookup with helpful error on miss."""
+    # exact match first
+    if value in mapping:
+        return mapping[value]
+    # case-insensitive match
+    lower = {k.lower(): v for k, v in mapping.items()}
+    if value.lower() in lower:
+        return lower[value.lower()]
+    # partial match
+    for k, v in lower.items():
+        if value.lower() in k or k in value.lower():
+            return v
+    raise ValueError(
+        f"Unknown {field_name}: '{value}'. Valid options: {list(mapping.keys())}"
+    )
+
+app = FastAPI(title="Cancer Survival Predictor", version="2.0.0")
+
+# ── HTML ───────────────────────────────────────────────────────────────────────
 HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -125,11 +172,40 @@ HTML = """<!DOCTYPE html>
     </div>
     <div class="field">
       <label>State</label>
-      <input type="text" id="state" placeholder="e.g. Maharashtra"/>
+      <select id="state">
+        <option value="">Select state</option>
+        <option>Andhra Pradesh</option>
+        <option>Bihar</option>
+        <option>Delhi</option>
+        <option>Gujarat</option>
+        <option>Karnataka</option>
+        <option>Kerala</option>
+        <option>Madhya Pradesh</option>
+        <option>Maharashtra</option>
+        <option>Punjab</option>
+        <option>Rajasthan</option>
+        <option>Tamil Nadu</option>
+        <option>Telangana</option>
+        <option>Uttar Pradesh</option>
+        <option>West Bengal</option>
+      </select>
     </div>
     <div class="field">
       <label>City</label>
-      <input type="text" id="city" placeholder="e.g. Pune"/>
+      <select id="city">
+        <option value="">Select city</option>
+        <option>Ahmedabad</option>
+        <option>Bangalore</option>
+        <option>Chennai</option>
+        <option>Delhi</option>
+        <option>Hyderabad</option>
+        <option>Jaipur</option>
+        <option>Kolkata</option>
+        <option>Lucknow</option>
+        <option>Mumbai</option>
+        <option>Pune</option>
+        <option>Surat</option>
+      </select>
     </div>
   </div>
 
@@ -139,7 +215,24 @@ HTML = """<!DOCTYPE html>
   <div class="grid-2">
     <div class="field">
       <label>Cancer Type</label>
-      <input type="text" id="cancer_type" placeholder="e.g. Lung, Breast"/>
+      <select id="cancer_type">
+        <option value="">Select cancer type</option>
+        <option>Bladder</option>
+        <option>Brain</option>
+        <option>Breast</option>
+        <option>Cervical</option>
+        <option>Colon</option>
+        <option>Kidney</option>
+        <option>Leukemia</option>
+        <option>Liver</option>
+        <option>Lung</option>
+        <option>Ovarian</option>
+        <option>Pancreatic</option>
+        <option>Prostate</option>
+        <option>Skin</option>
+        <option>Stomach</option>
+        <option>Thyroid</option>
+      </select>
     </div>
     <div class="field">
       <label>Stage</label>
@@ -155,12 +248,13 @@ HTML = """<!DOCTYPE html>
       <label>Treatment Type</label>
       <select id="treatment">
         <option value="">Select treatment</option>
-        <option>Surgery</option>
         <option>Chemotherapy</option>
-        <option>Radiation</option>
-        <option>Immunotherapy</option>
-        <option>Targeted Therapy</option>
         <option>Combined</option>
+        <option>Hormone Therapy</option>
+        <option>Immunotherapy</option>
+        <option>Radiation</option>
+        <option>Surgery</option>
+        <option>Targeted Therapy</option>
       </select>
     </div>
     <div class="field">
@@ -184,9 +278,9 @@ async function predict() {
 
   const age             = document.getElementById("age").value.trim();
   const gender          = document.getElementById("gender").value;
-  const state           = document.getElementById("state").value.trim();
-  const city            = document.getElementById("city").value.trim();
-  const cancer_type     = document.getElementById("cancer_type").value.trim();
+  const state           = document.getElementById("state").value;
+  const city            = document.getElementById("city").value;
+  const cancer_type     = document.getElementById("cancer_type").value;
   const stage           = document.getElementById("stage").value;
   const treatment_type  = document.getElementById("treatment").value;
   const survival_months = document.getElementById("survival_months").value.trim();
@@ -285,34 +379,35 @@ async def health():
 @app.post("/predict")
 async def predict(data: PatientData):
     try:
-        features = [
-            data.Age,
-            data.Gender,
-            data.State,
-            data.City,
-            data.Cancer_Type,
-            data.Stage,
-            data.Treatment_Type,
-            data.Survival_Months,
-        ]
-        X = np.array(features, dtype=object).reshape(1, -1)
+        gender       = encode_fuzzy(data.Gender,        GENDER_MAP,       "Gender")
+        state        = encode_fuzzy(data.State,         STATE_MAP,        "State")
+        city         = encode_fuzzy(data.City,          CITY_MAP,         "City")
+        cancer_type  = encode_fuzzy(data.Cancer_Type,   CANCER_TYPE_MAP,  "Cancer_Type")
+        stage        = encode_fuzzy(data.Stage,         STAGE_MAP,        "Stage")
+        treatment    = encode_fuzzy(data.Treatment_Type, TREATMENT_MAP,   "Treatment_Type")
+
+        features = [data.Age, gender, state, city, cancer_type, stage, treatment, data.Survival_Months]
+        X = np.array(features, dtype=float).reshape(1, -1)
+
         prediction = model.predict(X)[0]
 
-        probability_alive = None
+        probability_alive    = None
         probability_deceased = None
         if hasattr(model, "predict_proba"):
-            proba = model.predict_proba(X)[0]
+            proba   = model.predict_proba(X)[0]
             classes = list(model.classes_)
             if "Alive" in classes:
-                probability_alive = float(proba[classes.index("Alive")])
+                probability_alive    = float(proba[classes.index("Alive")])
             if "Deceased" in classes:
                 probability_deceased = float(proba[classes.index("Deceased")])
 
         return {
-            "prediction": str(prediction),
-            "probability_alive": probability_alive,
+            "prediction":           str(prediction),
+            "probability_alive":    probability_alive,
             "probability_deceased": probability_deceased,
         }
 
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
